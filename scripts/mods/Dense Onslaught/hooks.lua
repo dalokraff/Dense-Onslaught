@@ -457,3 +457,219 @@ mod:hook(BTQuickTeleportAction, "enter", function (func, self, unit, blackboard,
 		conflict_director:spawn_one(Breeds["chaos_plague_sorcerer"], hidden_pos)
 	end
 end)
+
+-- 
+-- 
+-- 
+-- 
+-- 
+-- 
+-- 
+-- 
+-- 
+-- 
+-- 
+-- 
+-- 
+-- 
+-- 
+-- 
+-- 
+-- 
+-- 
+-- 
+-- 
+-- 
+-- 
+-- 
+-- 
+
+
+-- Fix to specials being disabled by pacing disables in events.
+mod:hook(Pacing, "disable", function (func, self)
+	self._threat_population = 1
+	self._specials_population = 1
+	self._horde_population = 0
+	self.pacing_state = "pacing_frozen"
+end)
+
+mod:hook(TerrorEventMixer.init_functions, "control_specials", function (func, event, element, t)
+	local conflict_director = Managers.state.conflict
+	local specials_pacing = conflict_director.specials_pacing
+	local not_already_enabled = specials_pacing:is_disabled()
+
+	if specials_pacing then
+		specials_pacing:enable(element.enable)
+
+		if element.enable and not_already_enabled then
+			local delay = math.random(5, 12)
+			local per_unit_delay = math.random(8, 16)
+			local t = Managers.time:time("game")
+
+			specials_pacing:delay_spawning(t, delay, per_unit_delay, true)
+		end
+	end
+end)
+
+-- Dirty hook to work around lack of node in custom spawners.
+mod:hook(AISpawner, "spawn_unit", function (func, self)
+	local breed_name = nil
+	local breed_list = self._breed_list
+	local last = #breed_list
+	local spawn_data = breed_list[last]
+	breed_list[last] = nil
+	last = last - 1
+	local breed_name = breed_list[last]
+	breed_list[last] = nil
+	local breed = Breeds[breed_name]
+
+	--Because this one spawner won't work properly with bilechemists..
+	if breed_name == "chaos_plague_sorcerer" then
+		if Unit.local_position(self._unit, 0).x == 349.67596435546875 then
+			local spawner_system = Managers.state.entity:system("spawner_system")
+			self._unit = spawner_system._id_lookup["sorcerer_boss_minion"][1]
+			self.changed = true
+		end
+	elseif self.changed then
+		local spawner_system = Managers.state.entity:system("spawner_system")
+		self._unit = spawner_system._id_lookup["sorcerer_boss_minion"][5]
+		self.changed = nil
+	end
+
+	local unit = self._unit
+
+	Unit.flow_event(unit, "lua_spawn")
+
+	local conflict_director = Managers.state.conflict
+	local spawn_category = "ai_spawner"
+	local node = (Unit.has_node(unit, self._config.node) and Unit.node(unit, self._config.node)) or 0
+	local parent_index = Unit.scene_graph_parent(unit, node) or 1
+	local parent_world_rotation = Unit.world_rotation(unit, parent_index)
+	local spawn_node_rotation = Unit.local_rotation(unit, node)
+	local spawn_rotation = Quaternion.multiply(parent_world_rotation, spawn_node_rotation)
+	local spawn_type = (Unit.get_data(self._unit, "hidden") and "horde_hidden") or "horde"
+	local spawn_pos = Unit.world_position(unit, node)
+	local animation_events = self._config.animation_events
+
+	if spawn_type == "horde_hidden" and breed.use_regular_horde_spawning then
+		spawn_type = "horde"
+	end
+
+	local spawn_animation = spawn_type == "horde" and animation_events[math.random(#animation_events)]
+	local spawner_name = self:get_spawner_name()
+	local side_id = spawn_data[1]
+	local optional_data = {
+		side_id = side_id
+	}
+	local group_template = spawn_data[2]
+
+	conflict_director:spawn_queued_unit(breed, Vector3Box(spawn_pos), QuaternionBox(spawn_rotation), spawn_category, spawn_animation, spawn_type, optional_data, group_template)
+	conflict_director:add_horde(1)
+
+	self._spawned_units = self._spawned_units + 1
+end)
+
+--Rewrite of threat calculation because the official function is unreliable and fails to remove units from the count.
+mod:hook(ConflictDirector, "calculate_threat_value", function (func, self)
+	local aggroed_units = {}
+	local ai_system = Managers.state.entity:system('ai_system')
+	local broadphase = ai_system.broadphase
+
+	for i, player in pairs(Managers.player:human_and_bot_players()) do
+		local ai_units = {}
+		if player.player_unit then
+			local num_ai_units = Broadphase.query(broadphase, Unit.local_position(player.player_unit, 0), 50, ai_units)
+			if num_ai_units > 0 then
+				for i = 1, num_ai_units do
+					local ai_unit = ai_units[i]
+					if ScriptUnit.has_extension(ai_unit, 'health_system') and ScriptUnit.extension(ai_unit, 'health_system'):is_alive() and BLACKBOARDS[ai_unit].target_unit then
+						aggroed_units[ai_unit] = ai_unit
+					end
+				end
+			end
+		end
+	end
+
+	local threat_value = 0
+	local count = 0
+
+	for _, unit in pairs(aggroed_units) do
+		local breed = Unit.get_data(unit, "breed")
+		threat_value = threat_value + (override_threat_value or breed.threat_value or 0)
+		count = count + 1
+	end
+
+	self.delay_horde = self.delay_horde_threat_value < threat_value
+	self.delay_mini_patrol = self.delay_mini_patrol_threat_value < threat_value
+	self.delay_specials = self.delay_specials_threat_value < threat_value
+	self.threat_value = threat_value
+	self.num_aggroed = count
+end)
+
+sections_to_open = {}
+mod:hook_origin(DoorSystem, "update", function(self, context, t)
+	DoorSystem.super.update(self, context, t)
+
+	if self.is_server then
+		table.clear(sections_to_open)
+
+		local active_groups = self._active_groups
+		local ai_group_system = Managers.state.entity:system("ai_group_system")
+
+		for map_section, groups in pairs(active_groups) do
+			local open_map_section = false
+
+			for i = 1, #groups, 1 do
+				local data = groups[i]
+				local group_id = data.group_id
+				local active = data.active
+				local group = ai_group_system:get_ai_group(group_id)
+
+				if group and not active then
+					data.active = true
+				elseif active and not group then
+					open_map_section = true
+				elseif active and group then
+					local members = group.members
+					local should_open = true
+
+					for unit, extension in pairs(members) do
+						local heath_extension = ScriptUnit.has_extension(unit, "health_system")
+
+						if heath_extension and heath_extension:is_alive() then
+							local blackboard = BLACKBOARDS[unit]
+							local breed = blackboard.breed
+							local is_boss = breed and breed.boss
+
+							if is_boss then
+									should_open = false
+
+									break
+							else
+								should_open = false
+
+								break
+							end
+						end
+					end
+
+					if should_open then
+						open_map_section = true
+					end
+				end
+			end
+
+			if open_map_section then
+				sections_to_open[#sections_to_open + 1] = map_section
+			end
+		end
+
+		for i = 1, #sections_to_open, 1 do
+			local map_section = sections_to_open[i]
+
+			self:open_boss_doors(map_section)
+
+			self._active_groups[map_section] = nil
+		end
+	end
+end)
