@@ -29,6 +29,46 @@ mod:dofile("scripts/mods/Dense Onslaught/directors/directors_init")
 --     mod:set(data.level_name, "dense_default")
 -- end
 
+local white_sv_health_step_multipliers_dense = {
+	1,
+	1,
+	1.5,
+	2.2,
+	3.3,
+	5.4,
+	6.4,
+	7.4 --base game c3
+	-- 9.25 --white SV, dutch number
+}
+local elite_health_step_multipliers_base_game = {
+	1,
+	1,
+	1.5,
+	2.2,
+	3.3,
+	5.4,
+	6.4,
+	7.4 --base game c3
+	-- 9.25 --white SV, dutch number
+}
+local function networkify_health(health_amount)
+	health_amount = math.clamp(health_amount, 0, 8191.5)
+	local decimal = health_amount % 1
+	local rounded_decimal = math.round(decimal * 4) * 0.25
+
+	return math.floor(health_amount) + rounded_decimal
+end
+local function health_steps(value, step_multipliers)
+	local value_steps = {}
+
+	for i = 1, 8 do
+		local step_value = value * step_multipliers[i]
+		local networkifyed_health = networkify_health(step_value)
+		value_steps[i] = networkifyed_health
+	end
+
+	return value_steps
+end
 
 mod.stand_up_tables = function()
 	local mean = 0.4
@@ -92,6 +132,8 @@ mod.stand_up_tables = function()
     Breeds.skaven_plague_monk.panic_close_detection_radius_sq = 9
     Breeds.skaven_plague_monk.passive_in_patrol_start_anim = "move_fwd"
 
+	-- Breeds.skaven_storm_vermin.max_health = health_steps(16, elite_health_step_multipliers)
+	
     BeastmenStandardTemplates.healing_standard.radius = 10
     UtilityConsiderations.beastmen_place_standard.distance_to_target.max_value = 15
 
@@ -146,6 +188,8 @@ mod.stand_down_tables = function()
     UnitVariationSettings.skaven_storm_vermin.material_variations.cloth_tint.max = 30
     UnitVariationSettings.skaven_storm_vermin.material_variations.skin_tint.min = 0
     UnitVariationSettings.skaven_storm_vermin.material_variations.skin_tint.max = 5
+
+	-- Breeds.skaven_storm_vermin.max_health = health_steps(16, elite_health_step_multipliers_base_game)
 	
 	RecycleSettings.max_grunts = 90
 	RecycleSettings.push_horde_if_num_alive_grunts_above =  60 
